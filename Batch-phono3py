@@ -1,0 +1,61 @@
+#!/bin/bash
+
+if [ "$1" == "help" ] ; then
+
+	echo position 1 is the material with capital first latter WARNING: the folder name has to be the material name you choose
+	echo position 2 is the the size of the supercell
+	echo position 3 is the the size of the phonon k-space mesh if x is given a mesh of x*x*x will be created
+	echo position 4 is the .CIF file
+	echo position 5 is ecutwfc, check the psudopotential for the value. Its recommended to multiply it by 1.3
+	echo position 6 is ecutrho, check the psudo potential for the ecutwfc/ecutrho ratio change ecutrho after the previous step
+	echo position 7 is the electronic kspace mesh
+	echo position 8 is the number of cores used for QE simulation
+	echo position 9 is the list of materials in double quote e.g. "Cu He H Li"
+	echo position 10 is the list of psudopotentials  in double quote e.g. "Cu-PSEUDO He-PSEUDO H-PSEUDO Li-PSEUDO"
+	exit 0
+fi
+
+cif2cell $4 -p quantum-espresso -o $1-conventional.in --no-reduce
+Lattice=$(grep -E -e '*A = +[0-9.]*' $1-conventional.in | cut -d '=' -f 2);
+awk "/CELL/{getline; print; getline; print; getline; print}" $1-conventional.in >> cell1.in;
+awk -v factor="$Lattice" '{printf "%1.9f %1.9f %1.9f\n", $1 * factor, $2 * factor, $3 * factor}' cell1.in  > cell2.in;
+sed -i '/CELL_PARAMETERS {alat}/{n;N;N;d}' $1-conventional.in;
+sed -i '/CELL_PARAMETERS {alat}/r cell2.in' $1-conventional.in;
+sed -i '/ibrav = /{n;d}' $1-conventional.in;
+sed -i 's/CELL_PARAMETERS {alat}/CELL_PARAMETERS {angstrom}/' $1-conventional.in;
+list1=$9
+list2=${10}
+array1=($list1)
+array2=($list2)
+
+count=${#array1[@]}
+for i in `seq 1 $count`
+do
+    sed -i "s/${array1[$i-1]}_PSEUDO/${array2[$i-1]}/" $1-conventional.in
+done
+rm cell{1..2}.in
+eval phono3py --qe -d --cutoff-pair=3 --dim="'$2 $2 $2'" --pa="F" -c $1-conventional.in;
+NUM=$(echo `grep nat supercell.in` | grep -Po '(nat = \d+)');
+FILES=$(ls -d supercell-* |wc -l);
+sed -i "s/prefix=/prefix='$1'/" header.in;
+sed -i "s/nat = 1/$NUM/" header.in;
+sed -i 's/ecutwfc = /ecutwfc = '$5'/' header.in;
+sed -i 's/ecutrho = /ecutrho = '$6'/' header.in;
+sed -i 's/0 0 0 1 1 1/'$7' '$7' '$7' 1 1 1/' header.in;
+for i in {1..3}; do tail -n +2 supercell-0000$i.in > supercell-0000$i-new.in;done;
+for i in {1..3}; do cat header.in supercell-0000$i-new.in >| $1-displaced-0000$i.in;done;
+sed -i "s/prefix='$1'/prefix=/" header.in;
+sed -i "s/$NUM/nat = 1/" header.in;
+sed -i 's/ecutwfc = '$5'/ecutwfc = /' header.in;
+sed -i 's/ecutrho = '$6'/ecutrho = /' header.in;
+sed -i 's/'$7' '$7' '$7' 1 1 1/0 0 0 1 1 1/' header.in;
+for i in {1..3} 
+do 
+	mpirun -np $8 pw.x -input $1-displaced-0000$i.in > $1-displaced-0000$i.out 
+	wait
+done
+phono3py --cf3 $1-displaced-{00001..00003}.out;
+wait
+phono3py --sym-fc;
+wait
+phono3py --mesh='$3 $3 $3' --fc3 --fc2 --br

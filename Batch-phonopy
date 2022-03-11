@@ -1,0 +1,39 @@
+#!/bin/bash
+
+if [ "$1" == "help" ] ; then
+
+	echo position 1 is the material with capital first latter WARNING: the folder name has to be the material name you choose
+	echo position 2 is the the size of the supercell
+	echo position 3 is the cif cell file
+	exit 0
+fi
+
+
+cif2cell $3 -p quantum-espresso -o $1-primitive.in;
+Lattice=$(grep -E -e '*A = +[0-9.]*' $1-primitive.in | cut -d '=' -f 2);
+awk "/CELL/{getline; print; getline; print; getline; print}" $1-primitive.in >> cell1.in;
+awk -v factor="$Lattice" '{printf "%1.9f %1.9f %1.9f\n", $1 * factor, $2 * factor, $3 * factor}' cell1.in  > cell2.in;
+sed -i '/CELL_PARAMETERS {alat}/{n;N;N;d}' $1-primitive.in;
+sed -i '/CELL_PARAMETERS {alat}/r cell2.in' $1-primitive.in;
+sed -i '/ibrav = /{n;d}' $1-primitive.in;
+rm cell{1..2}.in
+eval phonopy --qe -d --dim="'$2 $2 $2'" -c $1-primitive.in;
+VAR=$(grep nat supercell.in);
+NUM=$(echo $VAR | grep -Po '(nat = \d+)');
+echo $VAR
+echo $NUM
+sed -i "s/nat = 1/$NUM/" header.in;
+tail -n +2 "supercell-001.in" > supercell-001-new.in;
+cat header.in supercell-001-new.in >| $1-displaced.in;
+sed -i "s/$NUM/nat = 1/" header.in
+mpirun -np 2 pw.x -input $1-displaced.in > $1-displaced.out;
+wait
+phonopy --qe -f $1-displaced.out;
+sed -i "s/DIM = 1 1 1/DIM = $2 $2 $2/" band-pdos.conf;
+phonopy --qe -c $1-primitive.in -p -s band-pdos.conf;
+wait
+sed -i "s/DIM = $2 $2 $2/DIM = 1 1 1/" band.conf;
+sed -i "s/DIM = 1 1 1/DIM = $2 $2 $2/" mesh.conf;
+phonopy --qe -c $1-primitive.in -p -s mesh.conf;
+wait
+sed -i "s/DIM = $2 $2 $2/DIM = 1 1 1/" mesh.conf;

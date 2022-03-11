@@ -1,0 +1,43 @@
+#!/bin/bash
+
+if [ "$1" == "help" ] ; then
+
+	echo position 1 is the material with capital first latter WARNING: the folder name has to be the material name you choose
+	echo position 2 is the ecutwfc, which is kinetic energy cutoff for wavefunctions
+	echo position 3 is the ecutrho, which is Kinetic energy cutoff for charge density and potential
+	echo position 4 is the name of the psudo potential file
+	echo position 5 is the k-point density for highdensity nscf calculation
+	echo position 6 is the k-point density for lowdensity relax calculation
+	echo position 7 is the cif file name
+	exit 0
+fi
+
+cif2cell $7 -p quantum-espresso -o $1-p.in;
+tail -n +8 $1-p.in > $1.nscf.in;
+NUM="\&CONTROL \n calculation='nscf',\n outdir='.', \n pseudo_dir='.', \n prefix='$1', \n verbosity='high', \n tprnfor=.true., \n tstress=.true., \n\/"
+sed -i "1s/^/$NUM/" $1.nscf.in;
+VAR=$(grep ntyp $1-p.in);
+NUM=$(echo $VAR | grep -Po '(ntyp = \d+)');
+sed -i "s/$NUM/& \n  ecutwfc=$2, \n  ecutrho=$3, \n  input_dft='pbe', \n  occupations='smearing', \n  smearing='mv', \n  degauss=0.005d0,/" $1.nscf.in;
+sed -i "/CELL_PARAMETERS {alat}/i &ELECTRONS \n  conv_thr=1d-08, \n  mixing_beta=0.7d0, \n/\n&IONS \n  ion_dynamics = 'bfgs', \n/" $1.nscf.in;
+sed -i "s/$1_PSEUDO/$4/" $1.nscf.in;
+printf "K_POINTS {automatic} \n $5 $5 $5 0 0 0" >> $1.nscf.in;
+cp $1.nscf.in $1.relax.in;
+sed -i "s/ $5 $5 $5 0 0 0/ $6 $6 $6 0 0 0/" $1.relax.in;
+sed -i "s/calculation='nscf'/calculation='relax'/" $1.relax.in;
+sed -i "s/verbosity='high'/verbosity='low'/" $1.relax.in;
+mpirun -np 2 pw.x -input $1.relax.in > $1.relax.out;
+wait
+mpirun -np 2 pw.x -input $1.nscf.in > $1.nscf.out;
+wait
+FERMI=$(grep Fermi Cu.relax.out | grep -Eo '[+-]?[0-9]+([.][0-9]+)?')
+eval python2 qe2boltz2.py $1 pw $FERMI 0
+wait
+eval btp2 -vv interpolate -m 5 ../Boltztrap-test; ## Change Boltztrap-test
+wait
+eval btp2 -vv integrate interpolation.bt2 -b 5000 50:1000:50 ## 5000 is the number of bins for the DOS
+
+echo trace output file: interpolation.trace
+echo conductivity/seebeck output file: interpolation.condtens
+echo Hall coefficient output file: interpolation.halltens
+echo JSON output file: interpolation.btj 
